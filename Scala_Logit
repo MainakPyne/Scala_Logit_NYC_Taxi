@@ -1,0 +1,76 @@
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql._
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types._
+import org.apache.spark.mllib.classification.LogisticRegressionWithLBFGS 
+import org.apache.spark.mllib.evaluation.BinaryClassificationMetrics 
+import org.apache.spark.mllib.regression.LabeledPoint
+import org.apache.spark.mllib.linalg.Vectors 
+
+
+
+
+val spark = SparkSession.builder().appName("Spark_SQL").config("spark.some.config.option", "some-value").getOrCreate()
+val rawdata = sc.textFile("./yellow_tripdata_2016-01.csv")
+val header = rawdata.first
+val data_noheader = rawdata.filter(x => x != header)
+val data_map = data_noheader.map(l => l.split(","))
+
+val data = data_map.map(l => Array(l(3).toDouble,l(4).toDouble,l(5).toDouble,l(6).toDouble,l(9).toDouble,l(10).toDouble,l(11).toDouble,l(15).toDouble))
+
+val n_lat = 40.9596
+val s_lat = 40.4856 
+val w_lat = -74.2635 
+val e_lat = -73.7526 
+
+//datacleaning
+
+val east_west = e_lat - w_lat
+val north_south = n_lat - s_lat
+
+val f_data = data.filter(l => (l(2) <= e_lat)  && (l(2) >= w_lat)&& (l(3)>=s_lat) && (l(3) <= n_lat) && (l(4) >= w_lat) && (l(4) <= e_lat) && (l(5)>=s_lat) && (l(5) <= n_lat))
+
+
+def zx(l: Double): Int = ((l-w_lat)/east_west*20).toInt
+def zy(l: Double): Int = ((l-s_lat)/north_south*10).toInt
+	
+def zone (x:Int, y:Int): Int = y*20+x
+
+def tip(x: Double) : Double = {if(x==0) 0 else 1}
+
+val data_zone = data_final.map(l => Row(l(0),l(1),zx(l(2)).toDouble,zy(l(3)).toDouble,zone(zx(l(2)),zy(l(3))).toDouble,zx(l(4)).toDouble,zy(l(5)).toDouble,zone(zx(l(4)),zy(l(5))).toDouble,l(6),l(7),tip(l(7))))
+
+val schemaString = "passenger_count,trip_distance,pickup_longitude,pickup_latitude,pickup_zone,dropoff_longitude,dropoff_latitude,dropoff_Zone,payment_type,tip_amount,tip_zero"
+val fields = schemaString.split(",").map(fieldName => StructField(fieldName, DoubleType, nullable = false))
+val schema = StructType(fields)
+
+val df = spark.createDataFrame(data_zone,schema)
+
+//Top questions
+val zone_tip = df.select( "dropoff_Zone","tip_amount").groupBy("dropoff_Zone").mean("tip_amount")
+val top_tip = zone_tip.orderBy(desc("avg(tip_amount)")).show(5)
+
+val pick_up = df.select("pickup_zone").groupBy("pickup_zone").count()
+val pick_up_top = pick_up.orderBy(desc("count")).show(5)
+
+val drop_count = df.select("dropoff_Zone").groupBy("dropoff_Zone").count()
+val drop_top = drop_count.orderBy(desc("count")).show(5)
+
+//histogram
+val drop_tip = df.filter(df("dropoff_Zone") == 110).select("tip_amount")
+drop_tip.rdd.map(x=>x(0).asInstanceOf[Double]).histogram(5)
+
+//logistic regression
+val train_data = df.select("passenger_count","trip_distance","pickup_zone","dropoff_Zone","payment_type","tip_zero").rdd.map(l=>l.toSeq.toArray.map(_.asInstanceOf[Double]))
+val labeled_data = train_data.map(l => LabeledPoint(l(5),Vectors.dense(l.slice(0,4))))
+labeled_data.cache
+val model = new LogisticRegressionWithLBFGS().setNumClasses(2).run(labeled_data) 
+val predictionAndLabels = labeled_data.map { case LabeledPoint(label, features) => val prediction = model.predict(features) 
+	(prediction, label) } 
+val weights = model.weights.toArray
+
+
+
+
+
+
